@@ -34,11 +34,19 @@ def load_flashcards():
         try:
             with open(LOCAL_FILE, "r") as f:
                 data = json.load(f)
+                # If file contains our metadata wrapper
+                if isinstance(data, dict) and "_meta" in data:
+                    meta = data.get("_meta", {})
+                    folders = {k: v for k, v in data.items() if k != "_meta"}
+                    # attach meta to returned structure
+                    folders.setdefault("_meta", meta)
+                    return folders
+
                 # Handle migration from old format to new format with folders
                 if isinstance(data, dict) and "level_1" in data and not isinstance(data.get("level_1"), dict):
-                    # Old format - migrate to new format
                     migrated_data = {DEFAULT_FOLDER: {level: cards for level, cards in data.items()}}
                     return migrated_data
+
                 return data
         except:
             pass
@@ -48,8 +56,15 @@ def load_flashcards():
 def save_flashcards():
     """Save flashcards to local file (primary) and optionally to Google Drive."""
     # Always save locally first (fast and reliable)
+    # Compose a file payload that can include meta settings
+    to_save = {k: v for k, v in st.session_state.flashcards.items() if k != "_meta"}
+    # include meta (draw chances and folder weights) if present
+    meta = st.session_state.get("_meta", {})
+    if meta:
+        to_save["_meta"] = meta
+
     with open(LOCAL_FILE, "w") as f:
-        json.dump(st.session_state.flashcards, f, indent=2)
+        json.dump(to_save, f, indent=2)
     
     # Try to save to Google Drive if credentials exist (optional, don't block if it fails)
     if has_google_credentials():
@@ -177,6 +192,13 @@ def create_folder(folder_name):
     """Create a new folder for organizing flashcards."""
     if folder_name.strip() and folder_name not in st.session_state.flashcards:
         st.session_state.flashcards[folder_name] = {level: [] for level in DICTIONARIES.keys()}
+        # ensure folder_weights tracks the new folder
+        meta = st.session_state.get("_meta", {})
+        fw = meta.get("folder_weights", {})
+        fw.setdefault(folder_name, 1.0)
+        st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
+        st.session_state.flashcards.setdefault("_meta", {})
+        st.session_state.flashcards["_meta"]["folder_weights"] = fw
         save_flashcards()
         return True
     return False
@@ -185,6 +207,14 @@ def delete_folder(folder_name):
     """Delete a folder and all its flashcards."""
     if folder_name in st.session_state.flashcards and folder_name != DEFAULT_FOLDER:
         del st.session_state.flashcards[folder_name]
+        # remove from folder_weights if present
+        meta = st.session_state.get("_meta", {})
+        fw = meta.get("folder_weights", {})
+        if folder_name in fw:
+            fw.pop(folder_name, None)
+        st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
+        st.session_state.flashcards.setdefault("_meta", {})
+        st.session_state.flashcards["_meta"]["folder_weights"] = fw
         save_flashcards()
         return True
     return False
@@ -206,68 +236,94 @@ def get_next_question():
     # Get folders to study from
     study_folders = st.session_state.get("study_folders", list(st.session_state.flashcards.keys()))
     
-    # Check all levels in selected folders and collect available questions
-    available = []
-    for folder in study_folders:
-        if folder in st.session_state.flashcards:
-            for level, cards in st.session_state.flashcards[folder].items():
-                if cards:
-                    available.append((folder, level, cards))
-    
-    if not available:
-        return None
-
     # Initialize recently shown list to avoid repeating the same few cards
     if "recently_shown" not in st.session_state:
         st.session_state.recently_shown = []
     if "recent_max" not in st.session_state:
         st.session_state.recent_max = 50
 
-    # Build combined lists per level across selected folders for better variety
-    level_buckets = {level: [] for level in DICTIONARIES.keys()}
+    # Load draw chances from meta if present, otherwise fall back
+    meta = st.session_state.get("_meta", {})
+    draw_chances = meta.get("draw_chances", {lvl: DICTIONARIES[lvl]["draw_chance"] for lvl in DICTIONARIES.keys()})
+    folder_weights = meta.get("folder_weights", {f: 1.0 for f in study_folders})
+
+    # Build a data structure of available cards per folder->level
+    available = {}
     for folder in study_folders:
         if folder in st.session_state.flashcards:
-            for level, cards in st.session_state.flashcards[folder].items():
-                for idx, card in enumerate(cards):
-                    # Use question+answer as a lightweight identifier
-                    key = f"{folder}||{level}||{card.get('question','')}||{card.get('answer','')}"
-                    level_buckets[level].append((folder, idx, card, key))
+            available[folder] = {level: list(cards) for level, cards in st.session_state.flashcards[folder].items()}
 
-    # Determine which level to draw from based on probabilities
-    rand = random()
-    cumulative = 0
-    for level in ["level_1", "level_2", "level_3", "level_4"]:
-        cumulative += DICTIONARIES[level]["draw_chance"]
-        candidates = level_buckets.get(level, [])
-        if candidates and rand <= cumulative:
-            # Try to avoid recently shown cards for better variety
-            non_recent = [c for c in candidates if c[3] not in st.session_state.recently_shown]
+    if not available:
+        return None
+
+    # Try a limited number of attempts: pick a folder by weight, then pick a level by draw chance
+    # If chosen bucket is empty, try again; fallback to any card.
+    folders_list = list(available.keys())
+    weights = [folder_weights.get(f, 1.0) for f in folders_list]
+
+    def weighted_choice(items, weights_list):
+        total = sum(weights_list)
+        if total <= 0:
+            return choice(items)
+        r = random() * total
+        upto = 0
+        for it, w in zip(items, weights_list):
+            upto += w
+            if r <= upto:
+                return it
+        return items[-1]
+
+    attempts = 0
+    while attempts < 10:
+        attempts += 1
+        folder = weighted_choice(folders_list, weights)
+
+        # choose level by drawing against draw_chances
+        r = random()
+        cumulative = 0
+        chosen_level = None
+        for lvl in ["level_1", "level_2", "level_3", "level_4"]:
+            cumulative += draw_chances.get(lvl, DICTIONARIES[lvl]["draw_chance"])
+            if r <= cumulative:
+                chosen_level = lvl
+                break
+
+        if chosen_level is None:
+            chosen_level = "level_4"
+
+        cards = available.get(folder, {}).get(chosen_level, [])
+        if cards:
+            # pick a card avoiding recently shown first
+            candidates = []
+            for idx, card in enumerate(cards):
+                key = f"{folder}||{chosen_level}||{card.get('question','')}||{card.get('answer','')}"
+                candidates.append((idx, card, key))
+            non_recent = [c for c in candidates if c[2] not in st.session_state.recently_shown]
             pick_list = non_recent if non_recent else candidates
-            folder, idx, selected, key = choice(pick_list)
-
-            # Update recent list
+            idx, selected, key = choice(pick_list)
             st.session_state.recently_shown.append(key)
             if len(st.session_state.recently_shown) > st.session_state.recent_max:
                 st.session_state.recently_shown = st.session_state.recently_shown[-st.session_state.recent_max:]
+            return (folder, chosen_level, selected, idx)
 
-            return (folder, level, selected, idx)
-
-    # Fallback: pick any available card (respecting recent history)
+    # Fallback: pick any available card across study_folders
     all_candidates = []
-    for level, items in level_buckets.items():
-        all_candidates.extend(items)
+    for folder, levels in available.items():
+        for lvl, cards in levels.items():
+            for idx, card in enumerate(cards):
+                key = f"{folder}||{lvl}||{card.get('question','')}||{card.get('answer','')}"
+                all_candidates.append((folder, lvl, idx, card, key))
 
     if not all_candidates:
         return None
 
-    non_recent = [c for c in all_candidates if c[3] not in st.session_state.recently_shown]
-    pick_list = non_recent if non_recent else all_candidates
-    folder, idx, selected, key = choice(pick_list)
+    non_recent = [c for c in all_candidates if c[4] not in st.session_state.recently_shown]
+    pick = choice(non_recent if non_recent else all_candidates)
+    folder, lvl, idx, card, key = pick
     st.session_state.recently_shown.append(key)
     if len(st.session_state.recently_shown) > st.session_state.recent_max:
         st.session_state.recently_shown = st.session_state.recently_shown[-st.session_state.recent_max:]
-
-    return (folder, level, selected, idx)
+    return (folder, lvl, card, idx)
 
 def move_card_up(folder, current_level, card_index):
     """Move card to next level (reduce draw chance)."""
@@ -291,7 +347,7 @@ def move_card_down(folder, current_level, card_index):
         return True
     return False
 
-def move_card_to_folder(src_folder, level, index, target_folder):
+def move_card_between_folders(src_folder, level, index, target_folder):
     """Move a card from one folder to another, keeping its current level."""
     if src_folder not in st.session_state.flashcards:
         return False
@@ -305,6 +361,28 @@ def move_card_to_folder(src_folder, level, index, target_folder):
         return True
     return False
 
+def rename_folder(old_name, new_name):
+    """Rename a folder while preserving its cards."""
+    if not new_name.strip() or old_name not in st.session_state.flashcards:
+        return False
+    if new_name in st.session_state.flashcards:
+        return False
+    st.session_state.flashcards[new_name] = st.session_state.flashcards.pop(old_name)
+    # Update study_folders if necessary
+    if old_name in st.session_state.get("study_folders", []):
+        sf = st.session_state.study_folders
+        st.session_state.study_folders = [new_name if f == old_name else f for f in sf]
+    # update meta folder_weights if present
+    meta = st.session_state.get("_meta", {})
+    fw = meta.get("folder_weights", {})
+    if old_name in fw:
+        fw[new_name] = fw.pop(old_name)
+    st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
+    st.session_state.flashcards.setdefault("_meta", {})
+    st.session_state.flashcards["_meta"]["folder_weights"] = fw
+    save_flashcards()
+    return True
+
 def get_stats(folders=None):
     """Return statistics about flashcard progress."""
     if folders is None:
@@ -315,8 +393,12 @@ def get_stats(folders=None):
     for level in DICTIONARIES.keys():
         count = 0
         for folder in folders:
+            if folder == "_meta":
+                continue
             if folder in st.session_state.flashcards:
-                count += len(st.session_state.flashcards[folder][level])
+                # guard in case structure changed
+                if level in st.session_state.flashcards[folder]:
+                    count += len(st.session_state.flashcards[folder][level])
         stats[level] = count
         total += count
     stats["total"] = total
@@ -333,9 +415,18 @@ if "current_question" not in st.session_state:
 if "show_answer" not in st.session_state:
     st.session_state.show_answer = False
 if "study_folders" not in st.session_state:
-    st.session_state.study_folders = list(st.session_state.flashcards.keys()) if st.session_state.flashcards else [DEFAULT_FOLDER]
+    st.session_state.study_folders = [f for f in st.session_state.flashcards.keys() if f != "_meta"] if st.session_state.flashcards else [DEFAULT_FOLDER]
 if "form_submit_count" not in st.session_state:
     st.session_state.form_submit_count = 0
+# Initialize meta settings (draw chances & folder weights)
+if "_meta" not in st.session_state:
+    file_meta = st.session_state.flashcards.get("_meta", {}) if isinstance(st.session_state.flashcards, dict) else {}
+    # default draw chances from DICTIONARIES
+    default_draw = {lvl: DICTIONARIES[lvl]["draw_chance"] for lvl in DICTIONARIES.keys()}
+    draw_chances = file_meta.get("draw_chances", default_draw)
+    # default folder weights: 1.0 for each existing folder
+    folder_weights = file_meta.get("folder_weights", {f: 1.0 for f in st.session_state.flashcards.keys() if f != "_meta"})
+    st.session_state["_meta"] = {"draw_chances": draw_chances, "folder_weights": folder_weights}
 
 # UI
 st.set_page_config(page_title="Flashcard Practice", layout="wide")
@@ -377,7 +468,7 @@ with tab1:
         st.session_state.temp_a_image = None
     
     # Select folder
-    selected_folder = st.selectbox("Select Folder:", options=list(st.session_state.flashcards.keys()), key="add_folder_select")
+    selected_folder = st.selectbox("Select Folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key="add_folder_select")
     
     # Text inputs - use form_submit_count to trigger clearing
     question_input = st.text_input("Question", placeholder="Enter your question", key=f"question_input_{st.session_state.form_submit_count}")
@@ -430,7 +521,7 @@ with tab2:
     
     # Folder selection for studying
     st.write("**Select folders to study from:**")
-    available_folders = list(st.session_state.flashcards.keys())
+    available_folders = [f for f in st.session_state.flashcards.keys() if f != "_meta"]
     
     selected_study_folders = st.multiselect(
         "Choose one or more folders:",
@@ -597,8 +688,9 @@ with tab3:
     
     with col1:
         new_folder_name = st.text_input("Create new folder:", placeholder="Enter folder name", key="new_folder_input")
-    
-    with col2:
+        # Rename folder helper
+        rename_from = st.selectbox("Rename folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key="rename_from_select")
+        rename_to = st.text_input("New name for selected folder:", key="rename_to_input")
         if st.button("Create", use_container_width=True):
             if new_folder_name.strip():
                 if create_folder(new_folder_name.strip()):
@@ -608,11 +700,20 @@ with tab3:
                     st.error("❌ Folder already exists!")
             else:
                 st.error("❌ Please enter a folder name")
+        if st.button("Rename", use_container_width=True, key="rename_folder_btn"):
+            if rename_from and rename_to.strip():
+                if rename_folder(rename_from, rename_to.strip()):
+                    st.success(f"✅ Folder renamed to '{rename_to.strip()}'")
+                    st.rerun()
+                else:
+                    st.error("❌ Rename failed - target name may already exist or be invalid")
+            else:
+                st.error("❌ Select a folder and enter a new name")
     
     st.divider()
     
     # Display folders and their contents
-    for folder_name in list(st.session_state.flashcards.keys()):
+    for folder_name in [f for f in list(st.session_state.flashcards.keys()) if f != "_meta"]:
         with st.expander(f"📁 {folder_name}", expanded=True):
             folder_data = st.session_state.flashcards[folder_name]
             
@@ -720,6 +821,19 @@ with tab3:
                                             st.session_state[edit_flag_key] = False
                                             st.rerun()
 
+                                # Move card to another folder
+                                move_key = f"move_target_{folder_name}_{level}_{idx}"
+                                target = st.selectbox("Move to folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key=move_key)
+                                if st.button("Move", key=f"move_btn_{folder_name}_{level}_{idx}"):
+                                    if target and target != folder_name:
+                                        if move_card_between_folders(folder_name, level, idx, target):
+                                            st.success(f"Moved to folder '{target}'")
+                                            st.rerun()
+                                        else:
+                                            st.error("Move failed")
+                                    else:
+                                        st.info("Select a different target folder to move")
+
                                 if st.button(f"🗑️ Delete", key=f"delete_{folder_name}_{level}_{idx}", use_container_width=True):
                                     delete_flashcard(folder_name, level, idx)
                                     st.success("Question deleted!")
@@ -728,6 +842,46 @@ with tab3:
 # TAB 4: Setup Instructions
 with tab4:
     st.subheader("🔧 Google Drive Setup")
+
+    st.subheader("⚖️ Sampling Settings")
+    st.info("Adjust how often levels and folders are drawn during practice. Changes persist to your local data file.")
+    meta = st.session_state.get("_meta", {})
+    draw_chances = meta.get("draw_chances", {lvl: DICTIONARIES[lvl]["draw_chance"] for lvl in DICTIONARIES.keys()})
+
+    st.write("**Level draw probabilities (will be normalized automatically)**")
+    cols = st.columns(len(draw_chances))
+    new_draw = {}
+    for i, lvl in enumerate(["level_1", "level_2", "level_3", "level_4"]):
+        with cols[i]:
+            new_draw[lvl] = st.slider(DICTIONARIES[lvl]["name"], min_value=0.0, max_value=1.0, value=float(draw_chances.get(lvl, DICTIONARIES[lvl]["draw_chance"])), step=0.01, key=f"draw_{lvl}")
+
+    # Normalize
+    total = sum(new_draw.values()) or 1.0
+    normalized = {k: (v / total) for k, v in new_draw.items()}
+
+    st.write("**Folder draw weights**")
+    folder_weights = meta.get("folder_weights", {})
+    # ensure all folders are present
+    for f in st.session_state.flashcards.keys():
+        if f == "_meta":
+            continue
+        folder_weights.setdefault(f, 1.0)
+
+    fw = {}
+    for f in folder_weights.keys():
+        fw[f] = st.slider(f, min_value=0.0, max_value=5.0, value=float(folder_weights.get(f, 1.0)), step=0.1, key=f"fw_{f}")
+
+    if st.button("Save Sampling Settings", use_container_width=True):
+        st.session_state["_meta"] = {"draw_chances": normalized, "folder_weights": fw}
+        # also keep a copy inside flashcards structure for persistence
+        st.session_state.flashcards.setdefault("_meta", {})
+        st.session_state.flashcards["_meta"]["draw_chances"] = normalized
+        st.session_state.flashcards["_meta"]["folder_weights"] = fw
+        save_flashcards()
+        st.success("Sampling settings saved")
+        st.rerun()
+
+    st.divider()
     
     st.info(
         """

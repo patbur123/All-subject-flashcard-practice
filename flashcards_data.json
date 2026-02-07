@@ -377,12 +377,6 @@
         "answer_image": null
       },
       {
-        "question": "first",
-        "answer": "primero",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
         "question": "not either; neither",
         "answer": "tampoco",
         "question_image": null,
@@ -393,6 +387,12 @@
       {
         "question": "To put on makeup",
         "answer": "Maquillarse",
+        "question_image": null,
+        "answer_image": null
+      },
+      {
+        "question": "first",
+        "answer": "primero",
         "question_image": null,
         "answer_image": null
       }
@@ -689,7 +689,8 @@
         "answer_image": null
       }
     ],
-    "level_2": [
+    "level_2": [],
+    "level_3": [
       {
         "question": "lim \ud835\udc65\u21920  \u20612\u2062\ud835\udc65\u2062sin\u2061( 1/3\u2062\ud835\udc65 )",
         "answer": "0",
@@ -697,7 +698,6 @@
         "answer_image": null
       }
     ],
-    "level_3": [],
     "level_4": []
   },
   "Theology Weekly Quiz #2": {
@@ -735,12 +735,6 @@
       {
         "question": "General revelation",
         "answer": "God has given witness in the world in nature, the dealings of nations,\nhuman conscience/moral sense, sensus divinitas, and human reason. General revelation\nprovides knowledge about God apart from any special and specific revelation given by God. This\nis similar to the idea of \u201cfinding God in all things\u201d at the heart of Ignatian spirituality.",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
-        "question": "Special revelation",
-        "answer": "God has progressively revealed himself in special and specific ways:\nprophecy, miracles, mystical experience, fulfilled prophecies, God\u2019s Son, Sacred Scripture, and\nTradition.",
         "question_image": null,
         "answer_image": null
       },
@@ -787,12 +781,6 @@
         "answer_image": null
       },
       {
-        "question": "Which three classic philosophies contributed to philosophy, and what were their major contributions:",
-        "answer": "1. Socrates: Quest for Truth\n2. Plato:  rejecting the body purifies the soul and recovers truth\nStoics:do our duty even when it hurts",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
         "question": "The purpose of General Revelation",
         "answer": "\u25cf To provide a basis on which God could judge people \n\u25cf There is none without excuse \n\u25cf So that we would seek/find God",
         "question_image": null,
@@ -805,40 +793,35 @@
         "answer_image": null
       }
     ],
-    "level_2": [],
-    "level_3": [
+    "level_2": [
+      {
+        "question": "Special revelation",
+        "answer": "God has progressively revealed himself in special and specific ways:\nprophecy, miracles, mystical experience, fulfilled prophecies, God\u2019s Son, Sacred Scripture, and\nTradition.",
+        "question_image": null,
+        "answer_image": null
+      },
+      {
+        "question": "Which three classic philosophies contributed to philosophy, and what were their major contributions:",
+        "answer": "1. Socrates: Quest for Truth\n2. Plato:  rejecting the body purifies the soul and recovers truth\nStoics:do our duty even when it hurts",
+        "question_image": null,
+        "answer_image": null
+      }
+    ],
+    "level_3": [],
+    "level_4": [
       {
         "question": "What is the Genesis quote on relevation?",
         "answer": "God\u2019s self-disclosure enables a relationship between God and humans in nature (Psalm 19)\nand human nature (Gen 1:26-28).",
         "question_image": null,
         "answer_image": null
       }
-    ],
-    "level_4": []
+    ]
   },
   "Physics Chapter 21": {
     "level_1": [
       {
-        "question": "What is the fundamental unit of charge",
-        "answer": "e = 1.60E-16 C, and it is a postive charge, so one electron = -e",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
-        "question": "Something higher on the triboelectric series will?",
-        "answer": "Take electrons",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
         "question": "What are the properties of a conductor?",
         "answer": "The electrons are free to move throughout the system, and the electric field inside the conductor is 0, and the charge lies directly on the surface of the object.",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
-        "question": "When two conductors are connected, what happens?",
-        "answer": "Their charges will equalize, leading to possible repulsion if one charge was larger than the other.",
         "question_image": null,
         "answer_image": null
       },
@@ -891,8 +874,28 @@
         "answer_image": null
       }
     ],
-    "level_2": [],
-    "level_3": [],
+    "level_2": [
+      {
+        "question": "What is the fundamental unit of charge",
+        "answer": "e = 1.60E-16 C, and it is a postive charge, so one electron = -e",
+        "question_image": null,
+        "answer_image": null
+      }
+    ],
+    "level_3": [
+      {
+        "question": "When two conductors are connected, what happens?",
+        "answer": "Their charges will equalize, leading to possible repulsion if one charge was larger than the other.",
+        "question_image": null,
+        "answer_image": null
+      },
+      {
+        "question": "Something higher on the triboelectric series will?",
+        "answer": "Take electrons",
+        "question_image": null,
+        "answer_image": null
+      }
+    ],
     "level_4": []
   },
   "Physics Chapter 22": {
@@ -906,5 +909,22 @@
     "level_2": [],
     "level_3": [],
     "level_4": []
+  },
+  "_meta": {
+    "draw_chances": {
+      "level_1": 0.6,
+      "level_2": 0.2,
+      "level_3": 0.15,
+      "level_4": 0.05
+    },
+    "folder_weights": {
+      "All Cards": 0.0,
+      "Spanish Lesson 7": 1.0,
+      "Calculus": 1.0,
+      "Theology Weekly Quiz #2": 1.0,
+      "Physics Chapter 21": 1.0,
+      "Physics Chapter 22": 1.0,
+      "Physics Chapter 23": 1.0
+    }
   }
 }
