@@ -19,11 +19,27 @@ DICTIONARIES = {
 
 DEFAULT_FOLDER = "All Cards"
 
+# Helper utilities for folder handling (exclude internal _meta and support nested folders)
+def folder_keys():
+    """Return folder names excluding internal _meta."""
+    if not isinstance(st.session_state.get("flashcards", {}), dict):
+        return [DEFAULT_FOLDER]
+    return [k for k in st.session_state.flashcards.keys() if k != "_meta"]
+
+
+def format_folder_label(name: str) -> str:
+    """Pretty-print a folder name showing nesting using `/` as separator.
+    The underlying option value remains the full path (e.g. "Parent/Child").
+    """
+    depth = name.count("/")
+    return ("    " * depth) + (name.split("/")[-1] or name)
+
+
 # Google Drive Functions (Simplified - No external API calls on every load)
 def has_google_credentials():
-    """Check if Google credentials are configured."""
+    """Check if Google credentials are available either in session or in secrets."""
     try:
-        return st.secrets.get("google_credentials") is not None
+        return st.session_state.get("google_creds") is not None or st.secrets.get("google_credentials") is not None
     except:
         return False
 
@@ -38,7 +54,7 @@ def load_flashcards():
                 if isinstance(data, dict) and "_meta" in data:
                     meta = data.get("_meta", {})
                     folders = {k: v for k, v in data.items() if k != "_meta"}
-                    # attach meta to returned structure
+                    # attach meta to returned structure so initialization can pick it up
                     folders.setdefault("_meta", meta)
                     return folders
 
@@ -73,20 +89,39 @@ def save_flashcards():
             from google_auth_oauthlib.flow import InstalledAppFlow
             from googleapiclient.discovery import build
             from googleapiclient.http import MediaIoBaseUpload
-            
-            creds_dict = st.secrets.get("google_credentials")
-            creds = Credentials.from_authorized_user_info(creds_dict, ['https://www.googleapis.com/auth/drive'])
-            service = build('drive', 'v3', credentials=creds)
-            
+
+            # Prefer session credentials (from an interactive auth during this run).
+            creds_obj = st.session_state.get("google_creds")
+
+            if not creds_obj:
+                creds_entry = st.secrets.get("google_credentials")
+                creds_dict = None
+                if creds_entry:
+                    # secrets may store JSON string or a dict
+                    if isinstance(creds_entry, str):
+                        try:
+                            creds_dict = json.loads(creds_entry)
+                        except Exception:
+                            creds_dict = None
+                    elif isinstance(creds_entry, dict):
+                        creds_dict = creds_entry
+                if creds_dict:
+                    creds_obj = Credentials.from_authorized_user_info(creds_dict, ['https://www.googleapis.com/auth/drive'])
+
+            if not creds_obj:
+                raise ValueError("No valid Google credentials available (add authorized credentials to Streamlit secrets or authorize for this session)")
+
+            service = build('drive', 'v3', credentials=creds_obj)
+
             # Find file ID
             query = f"name='{DRIVE_FILE_NAME}' and trashed=false"
             results = service.files().list(q=query, spaces='drive', fields='files(id, name)', pageSize=1).execute()
             files = results.get('files', [])
             file_id = files[0]['id'] if files else None
-            
-            file_content = json.dumps(st.session_state.flashcards, indent=2)
+
+            file_content = json.dumps({k: v for k, v in st.session_state.flashcards.items()}, indent=2)
             media = MediaIoBaseUpload(io.BytesIO(file_content.encode()), mimetype='application/json')
-            
+
             if file_id:
                 # Update existing file
                 service.files().update(fileId=file_id, media_body=media).execute()
@@ -95,8 +130,11 @@ def save_flashcards():
                 file_metadata = {'name': DRIVE_FILE_NAME}
                 service.files().create(body=file_metadata, media_body=media).execute()
         except Exception as e:
-            # Silently fail - we already saved locally
-            pass
+            # Report failure but do not block local save
+            try:
+                st.warning(f"Google Drive sync failed: {e}")
+            except Exception:
+                pass
 
 # Define functions first
 def add_new_flashcard(question, answer, question_image=None, answer_image=None, folder=DEFAULT_FOLDER):
@@ -165,8 +203,8 @@ def reset_all_cards(folder=None):
             st.session_state.flashcards[folder] = {level: [] for level in DICTIONARIES.keys()}
             st.session_state.flashcards[folder]["level_1"] = all_cards
     else:
-        # Reset all cards across all folders
-        for folder_name in st.session_state.flashcards.keys():
+        # Reset all cards across all folders (skip internal keys)
+        for folder_name in folder_keys():
             all_cards = []
             for level in st.session_state.flashcards[folder_name].values():
                 all_cards.extend(level)
@@ -182,23 +220,31 @@ def delete_all_cards(folder=None):
         if folder in st.session_state.flashcards:
             st.session_state.flashcards[folder] = {level: [] for level in DICTIONARIES.keys()}
     else:
-        # Delete all cards across all folders
-        for folder_name in st.session_state.flashcards.keys():
+        # Delete all cards across all folders (skip internal keys)
+        for folder_name in folder_keys():
             st.session_state.flashcards[folder_name] = {level: [] for level in DICTIONARIES.keys()}
     
     save_flashcards()
 
 def create_folder(folder_name):
-    """Create a new folder for organizing flashcards."""
-    if folder_name.strip() and folder_name not in st.session_state.flashcards:
-        st.session_state.flashcards[folder_name] = {level: [] for level in DICTIONARIES.keys()}
-        # ensure folder_weights tracks the new folder
-        meta = st.session_state.get("_meta", {})
-        fw = meta.get("folder_weights", {})
-        fw.setdefault(folder_name, 1.0)
-        st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
-        st.session_state.flashcards.setdefault("_meta", {})
-        st.session_state.flashcards["_meta"]["folder_weights"] = fw
+    """Create a new folder for organizing flashcards. Supports nested folders using `/`.
+
+    When creating a nested folder like "Parent/Child" the parent folder
+    ("Parent") will also be created if it doesn't already exist so it appears in the UI.
+    """
+    name = folder_name.strip()
+    if not name:
+        return False
+
+    # create parent chain for nested folders (e.g. 'A/B/C')
+    parts = name.split("/")
+    for i in range(1, len(parts)):
+        parent = "/".join(parts[:i])
+        if parent and parent not in st.session_state.flashcards:
+            st.session_state.flashcards[parent] = {level: [] for level in DICTIONARIES.keys()}
+
+    if name not in st.session_state.flashcards:
+        st.session_state.flashcards[name] = {level: [] for level in DICTIONARIES.keys()}
         save_flashcards()
         return True
     return False
@@ -207,14 +253,6 @@ def delete_folder(folder_name):
     """Delete a folder and all its flashcards."""
     if folder_name in st.session_state.flashcards and folder_name != DEFAULT_FOLDER:
         del st.session_state.flashcards[folder_name]
-        # remove from folder_weights if present
-        meta = st.session_state.get("_meta", {})
-        fw = meta.get("folder_weights", {})
-        if folder_name in fw:
-            fw.pop(folder_name, None)
-        st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
-        st.session_state.flashcards.setdefault("_meta", {})
-        st.session_state.flashcards["_meta"]["folder_weights"] = fw
         save_flashcards()
         return True
     return False
@@ -234,7 +272,7 @@ def decode_image(image_data):
 def get_next_question():
     """Select next question based on draw chances from each level."""
     # Get folders to study from
-    study_folders = st.session_state.get("study_folders", list(st.session_state.flashcards.keys()))
+    study_folders = st.session_state.get("study_folders", folder_keys())
     
     # Initialize recently shown list to avoid repeating the same few cards
     if "recently_shown" not in st.session_state:
@@ -372,33 +410,25 @@ def rename_folder(old_name, new_name):
     if old_name in st.session_state.get("study_folders", []):
         sf = st.session_state.study_folders
         st.session_state.study_folders = [new_name if f == old_name else f for f in sf]
-    # update meta folder_weights if present
-    meta = st.session_state.get("_meta", {})
-    fw = meta.get("folder_weights", {})
-    if old_name in fw:
-        fw[new_name] = fw.pop(old_name)
-    st.session_state["_meta"] = {"draw_chances": meta.get("draw_chances", {}), "folder_weights": fw}
-    st.session_state.flashcards.setdefault("_meta", {})
-    st.session_state.flashcards["_meta"]["folder_weights"] = fw
     save_flashcards()
     return True
 
 def get_stats(folders=None):
-    """Return statistics about flashcard progress."""
+    """Return statistics about flashcard progress. Skips internal keys like "_meta"."""
     if folders is None:
-        folders = list(st.session_state.flashcards.keys())
-    
+        folders = folder_keys()
+
+    # normalize folder list to existing folders only
+    folders = [f for f in folders if f in st.session_state.flashcards and f != "_meta"]
+
     stats = {}
     total = 0
     for level in DICTIONARIES.keys():
         count = 0
         for folder in folders:
-            if folder == "_meta":
-                continue
-            if folder in st.session_state.flashcards:
-                # guard in case structure changed
-                if level in st.session_state.flashcards[folder]:
-                    count += len(st.session_state.flashcards[folder][level])
+            # defensive: skip folders that don't have expected level structure
+            lvl_bucket = st.session_state.flashcards.get(folder, {}).get(level, [])
+            count += len(lvl_bucket)
         stats[level] = count
         total += count
     stats["total"] = total
@@ -415,7 +445,8 @@ if "current_question" not in st.session_state:
 if "show_answer" not in st.session_state:
     st.session_state.show_answer = False
 if "study_folders" not in st.session_state:
-    st.session_state.study_folders = [f for f in st.session_state.flashcards.keys() if f != "_meta"] if st.session_state.flashcards else [DEFAULT_FOLDER]
+    # default to all real folders (exclude internal keys)
+    st.session_state.study_folders = folder_keys() or [DEFAULT_FOLDER]
 if "form_submit_count" not in st.session_state:
     st.session_state.form_submit_count = 0
 # Initialize meta settings (draw chances & folder weights)
@@ -424,9 +455,13 @@ if "_meta" not in st.session_state:
     # default draw chances from DICTIONARIES
     default_draw = {lvl: DICTIONARIES[lvl]["draw_chance"] for lvl in DICTIONARIES.keys()}
     draw_chances = file_meta.get("draw_chances", default_draw)
-    # default folder weights: 1.0 for each existing folder
-    folder_weights = file_meta.get("folder_weights", {f: 1.0 for f in st.session_state.flashcards.keys() if f != "_meta"})
+    # default folder weights: 1.0 for each existing folder (exclude internal keys)
+    folder_weights = file_meta.get("folder_weights", {f: 1.0 for f in (st.session_state.flashcards.keys() if isinstance(st.session_state.flashcards, dict) else []) if f != "_meta"})
     st.session_state["_meta"] = {"draw_chances": draw_chances, "folder_weights": folder_weights}
+
+    # make sure the in-memory flashcards structure does NOT carry an internal "_meta" key
+    if isinstance(st.session_state.flashcards, dict) and "_meta" in st.session_state.flashcards:
+        st.session_state.flashcards.pop("_meta", None)
 
 # UI
 st.set_page_config(page_title="Flashcard Practice", layout="wide")
@@ -450,7 +485,7 @@ with st.sidebar:
         # Re-load flashcards from the local JSON file into session state
         st.session_state.flashcards = load_flashcards()
         # Ensure study_folders stays in sync with available folders
-        st.session_state.study_folders = list(st.session_state.flashcards.keys()) if st.session_state.flashcards else [DEFAULT_FOLDER]
+        st.session_state.study_folders = folder_keys() or [DEFAULT_FOLDER]
         st.success("Reloaded flashcards from flashcards_data.json")
         st.rerun()
 
@@ -468,7 +503,7 @@ with tab1:
         st.session_state.temp_a_image = None
     
     # Select folder
-    selected_folder = st.selectbox("Select Folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key="add_folder_select")
+    selected_folder = st.selectbox("Select Folder:", options=folder_keys(), format_func=format_folder_label, key="add_folder_select")
     
     # Text inputs - use form_submit_count to trigger clearing
     question_input = st.text_input("Question", placeholder="Enter your question", key=f"question_input_{st.session_state.form_submit_count}")
@@ -521,11 +556,12 @@ with tab2:
     
     # Folder selection for studying
     st.write("**Select folders to study from:**")
-    available_folders = [f for f in st.session_state.flashcards.keys() if f != "_meta"]
+    available_folders = folder_keys()
     
     selected_study_folders = st.multiselect(
         "Choose one or more folders:",
         options=available_folders,
+        format_func=format_folder_label,
         default=st.session_state.study_folders,
         key="study_folders_select"
     )
@@ -689,8 +725,10 @@ with tab3:
     with col1:
         new_folder_name = st.text_input("Create new folder:", placeholder="Enter folder name", key="new_folder_input")
         # Rename folder helper
-        rename_from = st.selectbox("Rename folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key="rename_from_select")
+        rename_from = st.selectbox("Rename folder:", options=folder_keys(), format_func=format_folder_label, key="rename_from_select")
         rename_to = st.text_input("New name for selected folder:", key="rename_to_input")
+    
+    with col2:
         if st.button("Create", use_container_width=True):
             if new_folder_name.strip():
                 if create_folder(new_folder_name.strip()):
@@ -713,7 +751,7 @@ with tab3:
     st.divider()
     
     # Display folders and their contents
-    for folder_name in [f for f in list(st.session_state.flashcards.keys()) if f != "_meta"]:
+    for folder_name in folder_keys():
         with st.expander(f"📁 {folder_name}", expanded=True):
             folder_data = st.session_state.flashcards[folder_name]
             
@@ -823,7 +861,7 @@ with tab3:
 
                                 # Move card to another folder
                                 move_key = f"move_target_{folder_name}_{level}_{idx}"
-                                target = st.selectbox("Move to folder:", options=[f for f in st.session_state.flashcards.keys() if f != "_meta"], key=move_key)
+                                target = st.selectbox("Move to folder:", options=folder_keys(), format_func=format_folder_label, key=move_key)
                                 if st.button("Move", key=f"move_btn_{folder_name}_{level}_{idx}"):
                                     if target and target != folder_name:
                                         if move_card_between_folders(folder_name, level, idx, target):
@@ -862,9 +900,7 @@ with tab4:
     st.write("**Folder draw weights**")
     folder_weights = meta.get("folder_weights", {})
     # ensure all folders are present
-    for f in st.session_state.flashcards.keys():
-        if f == "_meta":
-            continue
+    for f in folder_keys():
         folder_weights.setdefault(f, 1.0)
 
     fw = {}
@@ -872,14 +908,27 @@ with tab4:
         fw[f] = st.slider(f, min_value=0.0, max_value=5.0, value=float(folder_weights.get(f, 1.0)), step=0.1, key=f"fw_{f}")
 
     if st.button("Save Sampling Settings", use_container_width=True):
-        st.session_state["_meta"] = {"draw_chances": normalized, "folder_weights": fw}
-        # also keep a copy inside flashcards structure for persistence
-        st.session_state.flashcards.setdefault("_meta", {})
-        st.session_state.flashcards["_meta"]["draw_chances"] = normalized
-        st.session_state.flashcards["_meta"]["folder_weights"] = fw
+        # save into the dedicated _meta session entry (persisted by save_flashcards)
+        st.session_state._meta = {"draw_chances": normalized, "folder_weights": fw}
         save_flashcards()
         st.success("Sampling settings saved")
         st.rerun()
+
+    # -- Optional: interactive OAuth for this session (useful if you can't put authorized creds into secrets)
+    if st.secrets.get("google_oauth_client"):
+        if st.button("Authorize Google Drive (this browser/session)"):
+            try:
+                from google_auth_oauthlib.flow import InstalledAppFlow
+                flow = InstalledAppFlow.from_client_config(st.secrets.get("google_oauth_client"), scopes=['https://www.googleapis.com/auth/drive'])
+                creds = flow.run_local_server(port=0)
+                st.session_state['google_creds'] = creds
+                st.success("Authorized for this session — Google Drive sync enabled.")
+                # attempt an immediate background sync
+                save_flashcards()
+            except Exception as e:
+                st.error(f"Authorization failed: {e}")
+    else:
+        st.info("To authorize from this device add a `google_oauth_client` JSON entry to Streamlit secrets (see instructions below).")
 
     st.divider()
     
@@ -923,7 +972,8 @@ with tab4:
     ```
     google_credentials = {"type": "OAuth2.0", "client_id": "...", ...}
     ```
-    3. Save the file
+    3. (Optional) instead of pasting authorized credentials you can add the OAuth client JSON under `google_oauth_client` to perform a one-time interactive authorization from your browser.
+    4. Save the file
     
     ### Step 5: Restart the App
     - Refresh your browser or restart Streamlit

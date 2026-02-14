@@ -757,12 +757,6 @@
         "answer_image": null
       },
       {
-        "question": "1 Peter 1:17-21",
-        "answer": "you were redeemed from the empty way of life handed down to you from your ancestors,\nbut with the precious blood of Christ, a lamb without blemish or defect. He was chosen before\nthe creation of the world, but was revealed in these last times for your sake. Through him you\nbelieve in God, who raised him from the dead and glorified him, and so your faith and hope are\nin God.",
-        "question_image": null,
-        "answer_image": null
-      },
-      {
         "question": "Hebrews 1:1-2",
         "answer": "In the past God spoke to our ancestors through the prophets at many times and in various\nways, but in these last days he has spoken to us by his Son, whom he appointed heir of all\nthings, and through whom also he made the universe",
         "question_image": null,
@@ -803,6 +797,12 @@
       {
         "question": "Which three classic philosophies contributed to philosophy, and what were their major contributions:",
         "answer": "1. Socrates: Quest for Truth\n2. Plato:  rejecting the body purifies the soul and recovers truth\nStoics:do our duty even when it hurts",
+        "question_image": null,
+        "answer_image": null
+      },
+      {
+        "question": "1 Peter 1:17-21",
+        "answer": "you were redeemed from the empty way of life handed down to you from your ancestors,\nbut with the precious blood of Christ, a lamb without blemish or defect. He was chosen before\nthe creation of the world, but was revealed in these last times for your sake. Through him you\nbelieve in God, who raised him from the dead and glorified him, and so your faith and hope are\nin God.",
         "question_image": null,
         "answer_image": null
       }
